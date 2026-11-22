@@ -1,0 +1,93 @@
+name: maltashop
+
+# One command starts the whole system:  docker compose up --build
+# Each service owns its data (a named volume mounted at /data) and talks to the
+# others only through RabbitMQ events. Configuration comes from environment
+# variables; see .env.example for the overridable ones.
+
+x-broker-url: &broker_url amqp://${RABBITMQ_USER:-maltashop}:${RABBITMQ_PASSWORD:-maltashop}@rabbitmq:5672/%2F
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-maltashop}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-maltashop}
+    ports:
+      - "15672:15672"   # management UI (queues, dead-letter queue)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  inventory-service:
+    build: ./inventory-service
+    environment:
+      BROKER_URL: *broker_url
+      DB_PATH: /data/inventory.db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8002:8000"
+    volumes:
+      - inventory-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  payment-service:
+    build: ./payment-service
+    environment:
+      BROKER_URL: *broker_url
+      DB_PATH: /data/payments.db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8003:8000"
+    volumes:
+      - payment-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  notification-service:
+    build: ./notification-service
+    environment:
+      BROKER_URL: *broker_url
+      DB_PATH: /data/notifications.db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8004:8000"
+    volumes:
+      - notification-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # Order starts last, once every consumer's queue is bound, so the first
+  # OrderPlaced event cannot be published to an exchange nobody is listening on.
+  order-service:
+    build: ./order-service
+    environment:
+      BROKER_URL: *broker_url
+      DB_PATH: /data/orders.db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8001:8000"
+    volumes:
+      - order-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+
+volumes:
+  order-data:
+  inventory-data:
+  payment-data:
+  notification-data:
